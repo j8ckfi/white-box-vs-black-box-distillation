@@ -14,7 +14,8 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+import json
 
 import numpy as np
 import pandas as pd
@@ -76,7 +77,7 @@ def _create_dataloader(subset, shuffle: bool, batch_size: int) -> DataLoader:
         subset,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=0,
+        num_workers=getattr(config, "DATALOADER_NUM_WORKERS", 0),
         pin_memory=torch.cuda.is_available(),
     )
 
@@ -208,7 +209,14 @@ def evaluate_model(
     return total_loss / num_batches, accuracy, per_task
 
 
-def run_trial(distill_type: str, seed: int, learning_rate: float, batch_size: int) -> List[Dict[str, float]]:
+def run_trial(
+    distill_type: str,
+    seed: int,
+    learning_rate: float,
+    batch_size: int,
+    use_deepspeed: bool,
+    deepspeed_config: Optional[Path],
+) -> List[Dict[str, float]]:
     print(f"\n=== Trial distill_type={distill_type}, seed={seed} ===")
     set_random_seed(seed)
 
@@ -235,12 +243,45 @@ def run_trial(distill_type: str, seed: int, learning_rate: float, batch_size: in
         lr=learning_rate,
         weight_decay=0.01,
     )
-    amp_enabled = (
-        device.type == "cuda"
-        and getattr(config, "USE_AUTOMATIC_MIXED_PRECISION", False)
-        and param_dtype == torch.float32
-    )
-    scaler = GradScaler("cuda", enabled=amp_enabled)
+    use_deepspeed = use_deepspeed and torch.cuda.is_available()
+    if use_deepspeed:
+        try:
+            import deepspeed
+        except ImportError as exc:
+            raise ImportError(
+                "DeepSpeed is not installed. Run `pip install deepspeed` to enable --use-deepspeed."
+            ) from exc
+        if deepspeed_config is None:
+            raise ValueError("--use-deepspeed was supplied but no config path was provided.")
+        if not deepspeed_config.is_absolute():
+            deepspeed_config = (Path(__file__).parent / deepspeed_config).resolve()
+        if not deepspeed_config.exists():
+            raise FileNotFoundError(f"DeepSpeed config not found: {deepspeed_config}")
+        with open(deepspeed_config, "r", encoding="utf-8") as fh:
+            ds_cfg = json.load(fh)
+        ds_cfg["train_batch_size"] = effective_batch_size
+        ds_cfg.setdefault("gradient_accumulation_steps", 1)
+        engine, optimizer, _, _ = deepspeed.initialize(
+            model=student_model,
+            optimizer=optimizer,
+            model_parameters=student_model.parameters(),
+            config=ds_cfg,
+        )
+        training_model = engine
+        eval_model = engine.module
+        device = engine.device
+        amp_enabled = False
+        scaler = None
+    else:
+        training_model = student_model
+        eval_model = student_model
+        amp_enabled = (
+            device.type == "cuda"
+            and getattr(config, "USE_AUTOMATIC_MIXED_PRECISION", False)
+            and param_dtype == torch.float32
+        )
+        scaler = GradScaler("cuda", enabled=amp_enabled)
+
     autocast_kwargs = {
         "device_type": "cuda",
         "dtype": torch.float16,
@@ -263,7 +304,7 @@ def run_trial(distill_type: str, seed: int, learning_rate: float, batch_size: in
 
             cm = autocast(**autocast_kwargs) if amp_enabled else contextlib.nullcontext()
             with cm:
-                outputs = student_model(
+                outputs = training_model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     return_hidden_states=distill_type in ["hidden_state", "combined"],
@@ -273,24 +314,29 @@ def run_trial(distill_type: str, seed: int, learning_rate: float, batch_size: in
                 losses = compute_loss(outputs, labels, teacher_data, distill_type)
                 total_loss = losses["total_loss"]
 
-            optimizer.zero_grad()
-            if scaler is not None and scaler.is_enabled():
-                scaler.scale(total_loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
+            if use_deepspeed:
+                training_model.zero_grad()
+                training_model.backward(total_loss)
+                training_model.step()
             else:
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
-                optimizer.step()
+                optimizer.zero_grad()
+                if scaler is not None and scaler.is_enabled():
+                    scaler.scale(total_loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    total_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
+                    optimizer.step()
 
             epoch_loss += total_loss.item()
             batches += 1
 
         avg_train_loss = epoch_loss / batches if batches else 0.0
         val_loss, val_accuracy, task_breakdown = evaluate_model(
-            student_model, val_loader, device, distill_type, tokenizer
+            eval_model, val_loader, device, distill_type, tokenizer
         )
         duration = time.time() - start_time
 
@@ -367,6 +413,17 @@ def main():
         action="store_true",
         help="Run only the first distill_type/seed pair for a smoke test.",
     )
+    parser.add_argument(
+        "--use-deepspeed",
+        action="store_true",
+        help="Enable DeepSpeed ZeRO-3 (requires `pip install deepspeed`).",
+    )
+    parser.add_argument(
+        "--deepspeed-config",
+        type=str,
+        default="ds_config_zero3.json",
+        help="Path to the DeepSpeed JSON config (default: ds_config_zero3.json).",
+    )
     args = parser.parse_args()
 
     distill_types = [t.strip() for t in args.distill_types.split(",") if t.strip()]
@@ -381,9 +438,20 @@ def main():
         combos = combos[:1]
         print("Running in single-trial mode.")
 
+    ds_config_path: Optional[Path] = None
+    if args.use_deepspeed:
+        ds_config_path = Path(args.deepspeed_config)
+
     all_records: List[Dict[str, float]] = []
     for distill_type, seed in combos:
-        trial_records = run_trial(distill_type, seed, args.learning_rate, args.batch_size)
+        trial_records = run_trial(
+            distill_type,
+            seed,
+            args.learning_rate,
+            args.batch_size,
+            args.use_deepspeed,
+            ds_config_path,
+        )
         all_records.extend(trial_records)
 
     save_results(all_records)
