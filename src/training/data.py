@@ -24,9 +24,8 @@ def load_offline_dataset(tokenizer: AutoTokenizer) -> OfflineDistillationDataset
             f"No Parquet files found under {config.OFFLINE_DATA_PATH}. "
             "Please generate offline teacher data before training."
         )
-    first_file = parquet_files[0]
-    print(f"Loading offline dataset from {first_file}")
-    return OfflineDistillationDataset(first_file, tokenizer, config.MAX_SEQ_LENGTH)
+    print(f"Loading offline dataset from {len(parquet_files)} files found in {config.OFFLINE_DATA_PATH}")
+    return OfflineDistillationDataset(parquet_files, tokenizer, config.MAX_SEQ_LENGTH)
 
 
 def split_dataset(dataset, seed: int) -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:

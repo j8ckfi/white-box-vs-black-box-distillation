@@ -267,7 +267,7 @@ def load_and_preprocess_datasets() -> List[Dict[str, str]]:
     print("Loading MMLU dataset...")
     try:
         mmlu = load_dataset(config.MMLU_DATASET, "all", split="auxiliary_train")
-        for ex in mmlu.select(range(min(1000, len(mmlu)))):
+        for ex in mmlu.select(range(min(5000, len(mmlu)))):
             q = str(ex.get("question", "")).strip()
             choices = ex.get("choices", [])
             c_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(choices)])
@@ -282,7 +282,7 @@ def load_and_preprocess_datasets() -> List[Dict[str, str]]:
     print("Loading GSM8K dataset...")
     try:
         gsm = load_dataset(config.GSM8K_DATASET, "main", split="train")
-        for ex in gsm.select(range(min(1000, len(gsm)))):
+        for ex in gsm.select(range(min(5000, len(gsm)))):
             p = str(ex.get("question", "")).strip()
             a = str(ex.get("answer", "")).strip()
             if p and a:

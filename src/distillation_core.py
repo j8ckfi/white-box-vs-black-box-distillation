@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from datasets import load_dataset
 
 import config
 
@@ -29,9 +30,10 @@ class OfflineDistillationDataset(Dataset):
     """
     Dataset for loading pre-computed teacher outputs.
     Now loads pre-tokenized (Prompt + Answer) sequences.
+    Uses Hugging Face datasets for memory-mapped loading to avoid RAM spikes.
     """
 
-    def __init__(self, parquet_path: str, tokenizer, max_length: int = 512):
+    def __init__(self, parquet_path: Union[str, List[str]], tokenizer, max_length: int = 512):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.teacher_vocab_size = getattr(config, "TEACHER_VOCAB_SIZE", 32000)
@@ -41,20 +43,15 @@ class OfflineDistillationDataset(Dataset):
         self.max_hidden_seq_len = _ensure_stride(self.max_length, self.hidden_stride)
         self.max_attention_seq_len = _ensure_stride(self.max_length, self.attention_stride)
 
-        df = pd.read_parquet(parquet_path)
-        
-        # Load inputs and metadata
-        self.input_ids = df["input_ids"].tolist()
-        self.attention_mask = df["attention_mask"].tolist()
-        self.prompt_lengths = df["prompt_length"].tolist() if "prompt_length" in df.columns else [0] * len(df)
-        self.task_names = df["task_name"].tolist() if "task_name" in df.columns else ["unknown"] * len(df)
-
-        # Load teacher outputs
-        self.teacher_topk_indices = df["teacher_topk_indices"].tolist() if "teacher_topk_indices" in df.columns else None
-        self.teacher_topk_values = df["teacher_topk_values"].tolist() if "teacher_topk_values" in df.columns else None
-        self.teacher_logits_dense = df["teacher_logits"].tolist() if "teacher_logits" in df.columns else None
-        self.teacher_hidden_state = df["teacher_hidden_state"].tolist() if "teacher_hidden_state" in df.columns else None
-        self.teacher_attention_map = df["teacher_attention_map"].tolist() if "teacher_attention_map" in df.columns else None
+        # Load with memory mapping (streaming from disk)
+        # split="train" is standard for load_dataset with data_files
+        if isinstance(parquet_path, list):
+            print(f"Initializing memory-mapped dataset from {len(parquet_path)} files...")
+        else:
+            print(f"Initializing memory-mapped dataset from {parquet_path}...")
+            
+        self.dataset = load_dataset("parquet", data_files=parquet_path, split="train")
+        self.column_names = set(self.dataset.column_names)
 
     @staticmethod
     def _to_py(value):
@@ -72,20 +69,24 @@ class OfflineDistillationDataset(Dataset):
         try:
             return np.array(data, dtype=dtype)
         except (ValueError, TypeError):
+            # Handle ragged arrays if necessary, though usually data should be uniform
             return np.stack([np.array(elem, dtype=dtype) for elem in data])
 
     def __len__(self):
-        return len(self.input_ids)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
+        # Load row on demand
+        row = self.dataset[idx]
+
         # 1. Get Inputs
-        input_ids_list = self.input_ids[idx]
-        attn_mask_list = self.attention_mask[idx]
+        input_ids_list = row["input_ids"]
+        attn_mask_list = row["attention_mask"]
         
         input_ids = torch.tensor(input_ids_list, dtype=torch.long)
         attention_mask = torch.tensor(attn_mask_list, dtype=torch.long)
         
-        # Ensure length matches MAX_SEQ_LENGTH (padding should have been done in offline step, but double check)
+        # Ensure length matches MAX_SEQ_LENGTH
         if input_ids.size(0) < self.max_length:
             pad_len = self.max_length - input_ids.size(0)
             input_ids = F.pad(input_ids, (0, pad_len), value=self.tokenizer.pad_token_id)
@@ -96,10 +97,8 @@ class OfflineDistillationDataset(Dataset):
 
         # 2. Create Labels (Mask Prompt)
         labels = input_ids.clone()
-        prompt_len = self.prompt_lengths[idx]
+        prompt_len = row.get("prompt_length", 0)
         
-        # Mask the prompt tokens (and any padding if mask is 0, though -100 is standard)
-        # We only want to train on the Answer part.
         if prompt_len > 0:
             labels[:prompt_len] = -100
         
@@ -109,45 +108,47 @@ class OfflineDistillationDataset(Dataset):
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
-            "task_name": self.task_names[idx],
+            "task_name": row.get("task_name", "unknown"),
         }
 
         # 3. Reconstruct Teacher Logits
-        if self.teacher_topk_indices is not None and self.teacher_topk_values is not None:
-            item["teacher_logits"] = self._reconstruct_logits(idx)
-        elif self.teacher_logits_dense is not None:
-            logits_array = self._to_numpy(self.teacher_logits_dense[idx], np.float32)
-            logits_tensor = torch.tensor(logits_array, dtype=torch.float32)
-            if logits_tensor.size(0) != self.max_length:
-                logits_tensor = self._pad_or_truncate_logits(logits_tensor)
-            item["teacher_logits"] = logits_tensor
+        if "teacher_topk_indices" in self.column_names and "teacher_topk_values" in self.column_names:
+            # Check if data exists in this row (it should)
+            if row.get("teacher_topk_indices") is not None:
+                item["teacher_logits"] = self._reconstruct_logits(row["teacher_topk_indices"], row["teacher_topk_values"])
+        elif "teacher_logits" in self.column_names:
+            if row.get("teacher_logits") is not None:
+                logits_array = self._to_numpy(row["teacher_logits"], np.float32)
+                logits_tensor = torch.tensor(logits_array, dtype=torch.float32)
+                if logits_tensor.size(0) != self.max_length:
+                    logits_tensor = self._pad_or_truncate_logits(logits_tensor)
+                item["teacher_logits"] = logits_tensor
 
         # 4. Reconstruct Teacher Hidden States
-        if self.teacher_hidden_state is not None:
-            hidden_array = self._to_numpy(self.teacher_hidden_state[idx], np.float16)
+        if "teacher_hidden_state" in self.column_names and row.get("teacher_hidden_state") is not None:
+            hidden_array = self._to_numpy(row["teacher_hidden_state"], np.float16)
             hidden_tensor = torch.tensor(hidden_array, dtype=torch.float32)
             item["teacher_hidden_state"] = self._pad_hidden(hidden_tensor)
 
         # 5. Reconstruct Teacher Attention
-        if self.teacher_attention_map is not None:
-            attn_array = self._to_numpy(self.teacher_attention_map[idx], np.float16)
+        if "teacher_attention_map" in self.column_names and row.get("teacher_attention_map") is not None:
+            attn_array = self._to_numpy(row["teacher_attention_map"], np.float16)
             attn_tensor = torch.tensor(attn_array, dtype=torch.float32)
             item["teacher_attention_map"] = self._pad_attention(attn_tensor)
 
         return item
 
-    def _reconstruct_logits(self, idx: int) -> torch.Tensor:
-        indices = self._to_numpy(self.teacher_topk_indices[idx], np.int64)
-        values = self._to_numpy(self.teacher_topk_values[idx], np.float32)
+    def _reconstruct_logits(self, indices_data, values_data) -> torch.Tensor:
+        indices = self._to_numpy(indices_data, np.int64)
+        values = self._to_numpy(values_data, np.float32)
         
         seq_len = indices.shape[0]
-        logits = torch.full((self.max_length, self.teacher_vocab_size), fill_value=-100.0, dtype=torch.float32) # -100 for softmax stability
+        logits = torch.full((self.max_length, self.teacher_vocab_size), fill_value=-100.0, dtype=torch.float32)
         
         target_len = min(self.max_length, seq_len)
         if target_len > 0:
             index_tensor = torch.from_numpy(indices[:target_len])
             value_tensor = torch.from_numpy(values[:target_len])
-            # scatter_ requires src to be same size.
             logits[:target_len].scatter_(1, index_tensor, value_tensor)
             
         return logits
