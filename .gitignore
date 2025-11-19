@@ -59,7 +59,8 @@ Whitebox vs Blackbox/HANDOFF.md
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
+# *.ipynb  <-- Commented out to allow committing run_colab.ipynb
+
 
 # Environment variables
 .env

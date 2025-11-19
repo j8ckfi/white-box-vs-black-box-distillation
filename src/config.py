@@ -5,7 +5,9 @@ Configuration parameters for the knowledge distillation experiment.
 import os
 
 # Model names
-TEACHER_MODEL_NAME = "mistralai/Mistral-7B-v0.1"
+# Using Llama-2-7b as teacher because it shares the same tokenizer as TinyLlama,
+# enabling white-box distillation (logit/hidden-state matching).
+TEACHER_MODEL_NAME = "NousResearch/Llama-2-7b-hf"
 STUDENT_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
 # Dataset names
@@ -26,7 +28,7 @@ BATCH_SIZE = 80
 WHITEBOX_BATCH_SIZE = 20
 NUM_EPOCHS = 3
 GRADIENT_ACCUMULATION_STEPS = 1
-MAX_SEQ_LENGTH = 256
+MAX_SEQ_LENGTH = 512
 VALIDATION_SPLIT = 0.1
 MAX_CPU_THREADS = 4
 USE_AUTOMATIC_MIXED_PRECISION = True
