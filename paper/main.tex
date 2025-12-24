@@ -165,7 +165,7 @@ Black-Box & 93.98\% & 2.98\% & --- & --- \\
 
 Figure~\ref{fig:task_breakdown} shows performance across individual tasks. Attention distillation provides the largest gain on SST-2 (+2.40\%), followed by MMLU (+0.79\%). Notably, the improvement on GSM8K is minimal (+0.09\%), suggesting that attention alignment primarily benefits language understanding tasks rather than structured mathematical reasoning.
 
-This pattern is consistent with the hypothesis that attention maps encode linguistic relationships (e.g., sentiment-bearing words, contextual dependencies) that transfer well between architectures, while mathematical reasoning may depend more on learned computational patterns within hidden states that do not transfer as effectively.
+This pattern is consistent with the hypothesis that attention maps encode linguistic relationships (e.g., sentiment-bearing words, contextual dependencies) that transfer well between architectures. Mathematical reasoning, particularly in GSM8K, often requires chain-of-thought processing---a sequential state evolution where each step builds on the previous. This sequential computation may be encoded primarily in the hidden state trajectory rather than in attention patterns, which capture global token dependencies. This could explain why hidden states did not transfer effectively in our setup: the student's smaller hidden dimension (2048 vs.~4096) may lack the capacity to replicate the teacher's intermediate reasoning steps.
 
 \begin{figure}[h]
 \centering
@@ -203,7 +203,11 @@ Validation loss (Figure~\ref{fig:loss_curves}) confirms this pattern: attention-
 
 We hypothesize that attention maps encode \textit{structural} information---which tokens attend to which---that transcends the specific representational capacity of the model. Unlike hidden states, which encode semantic features in model-specific vector spaces, attention patterns may represent relational structure that transfers more naturally between architectures.
 
-TinyLlama and Llama-2 share the same number of attention heads (32), enabling direct alignment without projection. In contrast, hidden state alignment requires learning a linear transformation from 2048 to 4096 dimensions, which may introduce representational bottlenecks. However, we note that this explanation is speculative; further analysis (e.g., probing experiments, attention visualization) would be needed to confirm this hypothesis.
+TinyLlama-1.1B and Llama-2-7B share the same number of attention heads (32), enabling direct alignment without projection. In contrast, hidden state alignment requires learning a linear transformation from 2048 to 4096 dimensions, which may introduce representational bottlenecks. However, we note that this explanation is speculative; further analysis (e.g., probing experiments, attention visualization) would be needed to confirm this hypothesis.
+
+\subsection{Efficiency of Final-Layer Alignment}
+
+Notably, our method aligns only the final transformer layer's attention maps, unlike approaches such as TinyBERT \citep{jiao2020tinybert} that perform layer-to-layer distillation throughout the model depth. That we achieve significant improvements (+1.58\%, $p < 0.01$) with this lightweight ``bottleneck'' alignment suggests that final-layer attention captures sufficient structural information for effective knowledge transfer. This makes the approach more computationally efficient than full-depth distillation while still providing meaningful gains.
 
 \subsection{Why Doesn't Combining Signals Help?}
 
@@ -211,7 +215,7 @@ The identical performance of Attention and Combined methods suggests that once a
 
 \subsection{Task-Dependent Benefits}
 
-The near-zero improvement on GSM8K (+0.09\%) compared to substantial gains on SST-2 (+2.40\%) suggests that attention alignment is most beneficial for tasks requiring nuanced language understanding. Mathematical reasoning may rely more on learned computational patterns within hidden representations rather than attention structure. This finding suggests practitioners should consider task characteristics when choosing distillation strategies.
+The near-zero improvement on GSM8K (+0.09\%) compared to substantial gains on SST-2 (+2.40\%) suggests that attention alignment is most beneficial for tasks requiring nuanced language understanding. Mathematical reasoning may rely more on sequential chain-of-thought computation within hidden representations rather than the global token relationships captured by attention maps. This finding suggests practitioners should consider task characteristics when choosing distillation strategies.
 
 \subsection{Practical Implications}
 
