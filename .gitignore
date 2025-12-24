@@ -52,7 +52,7 @@ models/
 offline_teacher_data/
 results/
 *.parquet
-*.csv
+# *.csv  # Commented to allow data files for analysis
 *.pkl
 Whitebox vs Blackbox/offline_teacher_data.zip
 Whitebox vs Blackbox/HANDOFF.md

@@ -74,7 +74,11 @@ def run_trial(
 
     history: List[Dict[str, float]] = []
     num_epochs = config.NUM_EPOCHS
-    grad_accum_steps = max(1, getattr(config, "GRADIENT_ACCUMULATION_STEPS", 1))
+    
+    # Calculate gradient accumulation steps dynamically to ensure constant effective batch size
+    target_effective = getattr(config, "TARGET_EFFECTIVE_BATCH_SIZE", 64)
+    grad_accum_steps = max(1, target_effective // effective_batch_size)
+    print(f"Distill type: {distill_type}, Batch size: {effective_batch_size}, Grad accum steps: {grad_accum_steps} (Target effective: {target_effective})")
 
     for epoch in range(num_epochs):
         epoch_loss = 0.0

@@ -58,9 +58,15 @@ class DistillationStudent(nn.Module):
         self.d_teacher = 4096  # Teacher (Mistral-7B) hidden dimension
         self._eager_attention_enabled = False
         
-        # Removing the linear projector as requested.
-        # We will align hidden states using dimension-agnostic metrics (like CKA) or padding/truncation.
-        
+        # Projector for hidden states (2048 -> 4096)
+        # This allows using MSE instead of CKA for hidden state alignment.
+        self.projector = nn.Linear(self.d_student, self.d_teacher, bias=False, dtype=torch.float32)
+        if bf16_supported:
+            self.projector = self.projector.to(torch.bfloat16)
+        else:
+            self.projector = self.projector.to(torch.float16)
+        self.projector = self.projector.to(device)
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -114,11 +120,12 @@ class DistillationStudent(nn.Module):
             # Get the final layer hidden states (last element of hidden_states tuple)
             hidden_states = outputs.hidden_states[-1]  # [batch_size, seq_len, d_student]
             
-            # No projection - returning raw hidden states
             result["hidden_state"] = hidden_states
-            # result["projected_hidden_state"] is no longer available
-            # We set it to hidden_states so the trainer doesn't crash, but the loss function must handle the dimension mismatch.
-            result["projected_hidden_state"] = hidden_states
+            
+            # Project to teacher dimension
+            # Note: We cast to the projector's dtype just in case
+            projected = self.projector(hidden_states.to(self.projector.weight.dtype))
+            result["projected_hidden_state"] = projected
         
         # Extract attention maps if requested
         if return_attention and outputs.attentions is not None:

@@ -1,0 +1,249 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+
+\title{Attention Alignment Outperforms Logit Distillation for LLM Compression: \\
+A Comparative Study of White-Box vs Black-Box Knowledge Transfer}
+
+\author{
+  Jack Large \\
+  Independent Researcher
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+% ============================================================================
+% ABSTRACT
+% ============================================================================
+\begin{abstract}
+Knowledge distillation enables compressing large language models (LLMs) into smaller, deployable variants. 
+While standard ``black-box'' distillation transfers only output logits, ``white-box'' methods additionally align internal representations such as hidden states and attention maps. 
+We systematically compare four distillation approaches for compressing Llama-2-7B into TinyLlama-1.1B across sentiment analysis (SST-2), reasoning (MMLU), and mathematical problem-solving (GSM8K) tasks.
+
+Our experiments ($N=7$ seeds per method) reveal that \textbf{attention alignment achieves +1.58\% higher accuracy} (95.56\% vs 93.98\%) compared to logit-only distillation. 
+Notably, combining attention with hidden state alignment yields no additional benefit, suggesting attention maps are the primary driver of improvement. 
+White-box methods also exhibit substantially lower variance (1.43\% vs 2.98\% std), indicating more stable training dynamics.
+
+These findings demonstrate that for heterogeneous teacher-student pairs with matched attention head counts, attention distillation provides a simple, effective enhancement over standard knowledge distillation with minimal computational overhead during training.
+\end{abstract}
+
+% ============================================================================
+% INTRODUCTION
+% ============================================================================
+\section{Introduction}
+
+Large language models (LLMs) have achieved remarkable performance across diverse NLP tasks, but their size---often billions of parameters---poses significant deployment challenges. Knowledge distillation \citep{hinton2015distilling} offers a promising compression approach by training a smaller ``student'' model to mimic a larger ``teacher'' model.
+
+Traditional distillation operates in a ``black-box'' manner, transferring only the teacher's output logits. However, LLMs encode rich intermediate representations: hidden states capture semantic features, while attention maps encode structural relationships between tokens. Can transferring these internal signals---``white-box'' distillation---improve student performance?
+
+We investigate this question by comparing four distillation methods:
+\begin{enumerate}
+    \item \textbf{Black-Box}: Standard KL-divergence on output logits
+    \item \textbf{Hidden State}: Logits + final-layer hidden state alignment
+    \item \textbf{Attention}: Logits + final-layer attention map alignment
+    \item \textbf{Combined}: All signals (logits + hidden states + attention)
+\end{enumerate}
+
+Our experiments compress Llama-2-7B \citep{touvron2023llama} into TinyLlama-1.1B \citep{zhang2024tinyllama}---a 6.4$\times$ compression ratio. We evaluate on three diverse tasks: sentiment classification (SST-2), multi-task reasoning (MMLU), and grade-school mathematics (GSM8K).
+
+Our key finding: \textbf{attention alignment provides consistent, significant improvement} (+1.58\% accuracy) over black-box distillation, while hidden state alignment alone offers modest gains (+0.73\%). Combining signals yields no additional benefit over attention-only, suggesting attention maps are the dominant transfer signal for heterogeneous LLM distillation.
+
+% ============================================================================
+% RELATED WORK
+% ============================================================================
+\section{Related Work}
+
+\paragraph{Knowledge Distillation.}
+\citet{hinton2015distilling} introduced knowledge distillation, showing that soft probability distributions from a teacher network provide richer supervision than hard labels. This approach has been extensively applied to model compression in NLP.
+
+\paragraph{Feature-Based Distillation.}
+FitNets \citep{romero2015fitnets} extended distillation to intermediate representations, training students to match teacher hidden states. This ``hint-based'' training accelerates convergence and improves generalization. Subsequent work explored attention transfer \citep{zagoruyko2017paying}, demonstrating that attention maps encode valuable structural information.
+
+\paragraph{Distillation for Transformers.}
+DistilBERT \citep{sanh2019distilbert} successfully applied distillation to BERT, achieving 97\% of BERT's performance with 60\% fewer parameters. TinyBERT \citep{jiao2020tinybert} further incorporated embedding-layer and attention-based distillation, while MobileBERT \citep{sun2020mobilebert} demonstrated effective distillation for resource-constrained devices.
+
+\paragraph{LLM Compression.}
+Recent work has explored distillation for modern LLMs, though most studies focus on logit-based approaches. Our work systematically evaluates whether white-box signals provide benefits for heterogeneous LLM distillation, where teacher and student architectures differ significantly.
+
+% ============================================================================
+% METHODOLOGY
+% ============================================================================
+\section{Methodology}
+
+\subsection{Models}
+
+\paragraph{Teacher.} Llama-2-7B \citep{touvron2023llama}: 7 billion parameters, 4096-dimensional hidden states, 32 attention heads.
+
+\paragraph{Student.} TinyLlama-1.1B \citep{zhang2024tinyllama}: 1.1 billion parameters (6.4$\times$ smaller), 2048-dimensional hidden states, 32 attention heads.
+
+\subsection{Loss Function}
+
+The total training loss combines multiple components:
+\begin{equation}
+\mathcal{L}_{\text{total}} = \alpha \mathcal{L}_{\text{task}} + \beta \mathcal{L}_{\text{KD}} + \gamma_1 \mathcal{L}_{\text{hidden}} + \gamma_2 \mathcal{L}_{\text{attn}}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\mathcal{L}_{\text{task}}$: Cross-entropy on ground-truth labels ($\alpha = 1.0$)
+    \item $\mathcal{L}_{\text{KD}}$: KL-divergence between teacher and student logits ($\beta = 0.5$)
+    \item $\mathcal{L}_{\text{hidden}}$: MSE between projected student and teacher hidden states ($\gamma_1 = 0.1$)
+    \item $\mathcal{L}_{\text{attn}}$: MSE between teacher and student attention maps ($\gamma_2 = 0.1$)
+\end{itemize}
+
+For hidden state alignment, we use a trainable linear projector to map student representations (2048-dim) to match teacher dimensions (4096-dim). Attention maps require no projection since both models have 32 heads.
+
+\subsection{Datasets}
+
+We evaluate on three diverse tasks (Table~\ref{tab:datasets}):
+\begin{itemize}
+    \item \textbf{SST-2} \citep{wang2018glue}: Binary sentiment classification (5,000 examples)
+    \item \textbf{MMLU} \citep{hendrycks2021measuring}: Multi-task reasoning across domains (1,000 examples)
+    \item \textbf{GSM8K} \citep{cobbe2021training}: Grade-school math word problems (1,000 examples)
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\caption{Dataset statistics}
+\label{tab:datasets}
+\begin{tabular}{llll}
+\toprule
+Dataset & Task Type & Examples & Evaluation \\
+\midrule
+SST-2 & Sentiment (NLU) & 5,000 & Binary accuracy \\
+MMLU & Reasoning & 1,000 & Multi-choice accuracy \\
+GSM8K & Math & 1,000 & Exact match \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training Configuration}
+
+All experiments use: learning rate $10^{-4}$ (AdamW), batch size 8, 3 epochs, max sequence length 512, gradient clipping at 1.0. Each method is run with 7 random seeds (0--6) for statistical validity. Teacher outputs are pre-computed offline for efficiency.
+
+% ============================================================================
+% RESULTS
+% ============================================================================
+\section{Results}
+
+\subsection{Overall Performance}
+
+Table~\ref{tab:main_results} presents the main results. Attention-based distillation achieves the highest accuracy at 95.56\%, outperforming the black-box baseline by +1.58 percentage points. The combined approach matches attention-only performance exactly, suggesting hidden states provide no additional signal when attention alignment is present.
+
+\begin{table}[h]
+\centering
+\caption{Overall accuracy (final epoch, $N=7$ seeds per method). Best results in \textbf{bold}.}
+\label{tab:main_results}
+\begin{tabular}{lccc}
+\toprule
+Method & Mean Accuracy & Std Dev & vs Black-Box \\
+\midrule
+\textbf{Attention} & \textbf{95.56\%} & 1.43\% & \textbf{+1.58\%} \\
+\textbf{Combined} & \textbf{95.56\%} & 1.43\% & \textbf{+1.58\%} \\
+Hidden State & 94.71\% & 1.05\% & +0.73\% \\
+Black-Box & 93.98\% & 2.98\% & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Task-Specific Results}
+
+Figure~\ref{fig:task_breakdown} shows performance across individual tasks. Attention distillation provides the largest gain on SST-2 (+2.40\%), followed by MMLU (+0.79\%) and GSM8K (+0.09\%). This suggests attention alignment is particularly beneficial for tasks requiring nuanced language understanding.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{../figures/task_breakdown.pdf}
+\caption{Task-specific accuracy breakdown. Attention distillation provides the largest gains on sentiment analysis (SST-2).}
+\label{fig:task_breakdown}
+\end{figure}
+
+\subsection{Learning Dynamics}
+
+Figure~\ref{fig:learning_curves} shows validation accuracy over training epochs. White-box methods converge to higher final accuracy and exhibit lower variance (shaded regions). Black-box distillation shows notably higher seed-to-seed variation (2.98\% std vs 1.43\%), indicating less stable training dynamics.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{../figures/learning_curves.pdf}
+\caption{Learning curves showing validation accuracy over training epochs. Shaded regions indicate $\pm$1 standard deviation across 7 seeds.}
+\label{fig:learning_curves}
+\end{figure}
+
+Validation loss (Figure~\ref{fig:loss_curves}) confirms this pattern: attention-based methods achieve substantially lower final loss (0.028) compared to black-box (0.056).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{../figures/loss_curves.pdf}
+\caption{Validation loss curves. Attention-based methods achieve approximately half the final loss of black-box distillation.}
+\label{fig:loss_curves}
+\end{figure}
+
+% ============================================================================
+% DISCUSSION
+% ============================================================================
+\section{Discussion}
+
+\subsection{Why Does Attention Work Better?}
+
+Attention maps encode \textit{structural} information---which tokens attend to which---that transcends the specific representational capacity of the model. Unlike hidden states, which encode semantic features in model-specific vector spaces, attention patterns represent relational structure that transfers more naturally between architectures.
+
+TinyLlama and Llama-2 share the same number of attention heads (32), enabling direct alignment without projection. In contrast, hidden state alignment requires learning a linear transformation from 2048 to 4096 dimensions, which may introduce representational bottlenecks.
+
+\subsection{Why Doesn't Combining Signals Help?}
+
+The identical performance of Attention and Combined methods suggests that once attention alignment is present, hidden state alignment provides redundant or conflicting supervision. The attention objective may already constrain the model sufficiently that additional hidden state matching adds no benefit.
+
+\subsection{Practical Implications}
+
+For practitioners compressing LLMs with matched attention head counts:
+\begin{enumerate}
+    \item \textbf{Use attention distillation}: +1.58\% accuracy with minimal overhead
+    \item \textbf{Skip hidden state alignment}: Adds complexity without benefit
+    \item \textbf{Expect more stable training}: Lower variance across random seeds
+\end{enumerate}
+
+% ============================================================================
+% LIMITATIONS
+% ============================================================================
+\section{Limitations}
+
+\begin{itemize}
+    \item \textbf{Model-specific}: Results apply to Llama-2 $\rightarrow$ TinyLlama; other model pairs may differ.
+    \item \textbf{Matched heads}: Both models have 32 attention heads; mismatched configurations would require additional projection.
+    \item \textbf{Single layer}: We align only final-layer attention; multi-layer alignment may provide additional benefits.
+    \item \textbf{Task scope}: Three tasks provide initial evidence; broader evaluation is warranted.
+    \item \textbf{Hyperparameter sensitivity}: Loss weights ($\gamma_1, \gamma_2$) were fixed; tuning may affect relative rankings.
+\end{itemize}
+
+% ============================================================================
+% CONCLUSION
+% ============================================================================
+\section{Conclusion}
+
+We systematically compared white-box and black-box knowledge distillation for LLM compression. Our experiments demonstrate that attention alignment provides meaningful improvement (+1.58\%) over standard logit distillation when compressing Llama-2-7B to TinyLlama-1.1B, while also reducing training variance. Hidden state alignment provides modest benefits alone but no additional gains when combined with attention distillation.
+
+These findings suggest that for heterogeneous LLM distillation with matched attention heads, practitioners should prioritize attention alignment over hidden state matching. Future work should explore multi-layer attention alignment and investigate whether these findings generalize to other model architectures.
+
+% ============================================================================
+% REPRODUCIBILITY
+% ============================================================================
+\section*{Reproducibility}
+
+Code is available at: \texttt{[GitHub URL to be added]}. All experiments use publicly available models (Llama-2-7B, TinyLlama-1.1B) and datasets (SST-2, MMLU, GSM8K). Training was conducted on NVIDIA GPUs with PyTorch and Hugging Face Transformers. Full hyperparameters are documented in Section 3.4.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

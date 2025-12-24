@@ -24,15 +24,17 @@ GAMMA_2 = 0.1  # Weight for attention alignment loss (L_align_attn)
 
 # Training hyperparameters (optimized for A100 80GB)
 LEARNING_RATE = 1e-4
-BATCH_SIZE = 16                 # Reduced from 80 to 16 to prevent GPU OOM
-WHITEBOX_BATCH_SIZE = 8         # Reduced from 20 to 8
+BATCH_SIZE = 128                # Increased for A100
+WHITEBOX_BATCH_SIZE = 64        # Increased for A100
+TARGET_EFFECTIVE_BATCH_SIZE = 128 # Faster convergence
 NUM_EPOCHS = 3
-GRADIENT_ACCUMULATION_STEPS = 4 # Increased to maintain effective batch size
+# Gradient accumulation steps will be calculated dynamically based on batch size
+# GRADIENT_ACCUMULATION_STEPS = 4 # Deprecated in favor of dynamic calculation
 MAX_SEQ_LENGTH = 512
 VALIDATION_SPLIT = 0.1
 MAX_CPU_THREADS = 4
 USE_AUTOMATIC_MIXED_PRECISION = True
-DATALOADER_NUM_WORKERS = 4      # Reduced from 6 to save CPU RAM overhead
+DATALOADER_NUM_WORKERS = 8      # Increased to feed GPU faster
 
 # Teacher model dimensions
 TEACHER_HIDDEN_DIM = 4096

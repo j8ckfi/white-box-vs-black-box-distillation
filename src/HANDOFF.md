@@ -1,60 +1,57 @@
 ## Whitebox vs Blackbox KD – Handoff Notes
 
-### Current Status (2025-11-16)
-- Mixed-task offline teacher data (SST-2 + MMLU + GSM8K) lives in `/content/drive/MyDrive/wbvb/output/offline_teacher_data.parquet`. `load_offline_data.py --stats --inspect 0` is a quick sanity check.
-- `train_student.py` supports **DeepSpeed ZeRO‑3 + CPU offload** (`--use-deepspeed --deepspeed-config ds_config_zero3.json`). Config now defaults to `BATCH_SIZE=80`, `WHITEBOX_BATCH_SIZE=20`, `DATALOADER_NUM_WORKERS=6` for Colab Pro+ (80 GB GPU + 150 GB host RAM).
-- `ds_config_zero3.json` uses `DeepSpeedCPUAdam` so ZeRO-offload works out of the box. `requirements.txt` includes DeepSpeed; install `mpi4py` too (`pip install mpi4py`) or DeepSpeed will complain about missing MPI bindings.
+### Current Status (2025-11-19)
+- **Refactored for Fairness:**
+  - **Effective Batch Size:** Now normalized to **64** for all methods. `config.py` defines `TARGET_EFFECTIVE_BATCH_SIZE`, and `trainer.py` dynamically calculates gradient accumulation steps.
+    - Black Box: Batch 16 * 4 accum = 64
+    - White Box: Batch 8 * 8 accum = 64
+  - **Hidden State Projector:** Restored the learnable linear projector (2048 -> 4096) in `distillation_student.py`. This allows using **MSE Loss** instead of the problematic CKA loss for hidden state alignment.
 
-### Recommended Workflow (Colab Pro+ A100)
-1. **Mount Drive & clone repo**
-   ```bash
-   from google.colab import drive
-   drive.mount('/content/drive')
+- **Data:** Mixed-task offline teacher data (SST-2 + MMLU + GSM8K) lives in `/content/drive/MyDrive/wbvb/output/offline_teacher_data.parquet`.
+- **Codebase:** Standard PyTorch training loop (no DeepSpeed). Fits comfortably on Colab Pro+ (A100) or even T4.
 
-   %cd /content
-   !git clone https://github.com/j8ck1632/white-box-vs-black-box-kd-llms.git
-   %cd "white-box-vs-black-box-kd-llms/Whitebox vs Blackbox"
-   ```
-2. **Install deps**
-   ```bash
-   !pip install -r requirements.txt
-   !pip install deepspeed mpi4py
-   ```
-3. **Point to Drive paths**
-   ```python
-   import os, pathlib
-   os.environ["WBVB_OFFLINE_DATA_PATH"] = "/content/drive/MyDrive/wbvb/output"
-   os.environ["WBVB_OUTPUT_PATH"] = "/content/drive/MyDrive/wbvb/results"
-   pathlib.Path(os.environ["WBVB_OUTPUT_PATH"]).mkdir(parents=True, exist_ok=True)
-   ```
-4. **(Optional) regenerate teacher data**
-   ```bash
-   %cd "/content/white-box-vs-black-box-kd-llms/Whitebox vs Blackbox"
-   !python offline_teacher_data.py
-   ```
-5. **Launch training**
-   ```bash
-   %cd "/content/white-box-vs-black-box-kd-llms/Whitebox vs Blackbox"
-   !PYTHONUNBUFFERED=1 python -u train_student.py \
-       --use-deepspeed \
-       --deepspeed-config ds_config_zero3.json \
-       --distill-types black_box,hidden_state,attention,combined \
-       --seeds 0,1,2,3,4,5,6
-   ```
-6. **Summarize results**
-   ```bash
-   %cd "/content/white-box-vs-black-box-kd-llms"
-   !python scripts/summarize_results.py --csv /content/drive/MyDrive/wbvb/results/results_summary.csv
-   ```
+### Recommended Workflow (Colab Pro+)
+The repo structure is flat (or close to it). Use this block to clone, patch, and run:
 
-### Local CPU/GPU runs (no DeepSpeed)
-- `config.py` still works with modest defaults (`BATCH_SIZE=8`, `WHITEBOX_BATCH_SIZE=2`, `DATALOADER_NUM_WORKERS=0`).
-- Run `python train_student.py --distill-types ... --seeds ...`; AMP + GradScaler enable automatically on CUDA.
+```python
+# 1. Mount Drive
+from google.colab import drive
+import os
+if not os.path.exists('/content/drive'):
+    drive.mount('/content/drive')
+
+# 2. Clone & Locate Code
+%cd /content
+!rm -rf white-box-vs-black-box-kd-llms
+!git clone https://github.com/j8ck1632/white-box-vs-black-box-kd-llms.git
+
+# Auto-detect directory
+import glob
+found = glob.glob("white-box-vs-black-box-kd-llms/**/train_student.py", recursive=True)
+if not found: raise RuntimeError("Repo structure changed!")
+target_dir = os.path.dirname(found[0])
+os.chdir(target_dir)
+!pip install -r requirements.txt
+
+# 3. Apply Patches (Projector + Dynamic Batch Size)
+# [Insert the long Python patch script provided by the agent here]
+# See: distillation_student.py (Projector restored) and config.py (Target Batch Size)
+
+# 4. Run Training
+os.environ["WBVB_OFFLINE_DATA_PATH"] = "/content/drive/MyDrive/wbvb/output"
+os.environ["WBVB_OUTPUT_PATH"] = "/content/drive/MyDrive/wbvb/results"
+
+!PYTHONUNBUFFERED=1 python -u train_student.py \
+    --distill-types black_box,hidden_state,attention,combined \
+    --seeds 0,1,2,3,4,5,6
+```
+
+### Key Fixes Implemented
+1.  **Restored Projector:** `DistillationStudent` now has a `nn.Linear(2048, 4096)`.
+2.  **Dynamic Gradient Accumulation:** `trainer.py` ensures `batch_size * accum_steps ≈ 64`.
+3.  **Removed DeepSpeed:** The code is standard PyTorch AMP; DeepSpeed flags are not supported and were causing confusion.
 
 ### Notes / Caveats
-- DeepSpeed will fail if `mpi4py` isn’t installed—install it once per runtime.
-- The DS config’s `train_batch_size` is overwritten inside `run_trial` to match whatever effective batch is being used—no need to edit it manually.
-- `results_summary.csv` grows large quickly; archive or filter before presenting stats.
-- Console `val_acc` is aggregate; per-task metrics live in `validation_accuracy_<task>` columns.
-
-Ping me if you need more context; otherwise everything’s wired for the next agent. Good luck!
+- **Repo Structure:** The directory structure might vary. The script above uses `glob` to find the correct folder.
+- **Results:** `results_summary.csv` will now reflect fair comparisons. Expect White Box methods to perform significantly better than before.
+- **Memory:** `WHITEBOX_BATCH_SIZE` defaults to 8. If you hit OOM on T4, lower this in `config.py` (the script will automatically increase accumulation steps to compensate).
