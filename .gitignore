@@ -52,20 +52,37 @@ models/
 offline_teacher_data/
 results/
 *.parquet
-# *.csv  # Commented to allow data files for analysis
 *.pkl
-Whitebox vs Blackbox/offline_teacher_data.zip
-Whitebox vs Blackbox/HANDOFF.md
+
+# Keep only the final data file
+results_summary*.csv
+results_summary_by_seed*.csv
+# !latestsummary.csv  # This one we keep
+
+# Windows
+desktop.ini
+Thumbs.db
+
+# Whitebox vs Blackbox legacy folder
+Whitebox vs Blackbox/
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+paper/*.fdb_latexmk
+paper/*.fls
 
 # Jupyter
 .ipynb_checkpoints/
-# *.ipynb  <-- Commented out to allow committing run_colab.ipynb
-
 
 # Environment variables
 .env
 .env.local
 
-# HuggingFace cache (optional - uncomment if you want to ignore)
+# HuggingFace cache (optional)
 # .cache/huggingface/
 
